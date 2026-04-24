@@ -1,8 +1,20 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #fffaf5;
+  --foreground: #1c1917;
+
+  /* Mesh-gradient backdrop — lives on <html> so it's part of the very first   */
+  /* paint (no JSX hydration or z-index compositing required). Five soft       */
+  /* radial glows over the warm off-white base mirror the previous layout-div  */
+  /* version exactly, but without any chance of a "cream flash" before React   */
+  /* mounts.                                                                    */
+  --mesh-gradient:
+    radial-gradient(1200px circle at 0% 0%, rgba(251, 146, 60, 0.22), transparent 45%),
+    radial-gradient(1000px circle at 100% 0%, rgba(244, 63, 94, 0.18), transparent 45%),
+    radial-gradient(900px circle at 0% 100%, rgba(251, 191, 36, 0.20), transparent 45%),
+    radial-gradient(1100px circle at 100% 100%, rgba(253, 186, 116, 0.22), transparent 45%),
+    radial-gradient(700px circle at 50% 50%, rgba(254, 240, 221, 0.40), transparent 65%);
 }
 
 @theme inline {
@@ -12,15 +24,184 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html,
+body {
+  min-height: 100%;
+}
+
+/*                                                                             */
+/* Global backdrop.                                                            */
+/*                                                                             */
+/* Previously lived as a `fixed -z-20` child of <body> in layout.tsx. That     */
+/* works fine once React hydrates, but on slower first paints (especially in   */
+/* dev mode with Turbopack) you could catch a brief flash of the solid cream   */
+/* base before the gradient div composited on top — the "edge glow showed up   */
+/* later" bug users were reporting.                                            */
+/*                                                                             */
+/* Moving the gradient to <html>'s background-image (attached to the viewport) */
+/* makes it part of the very first paint, with zero dependency on React or JS  */
+/* booting up. <body> stays transparent so everything layers on top cleanly.    */
+/*                                                                             */
+html {
+  background-color: var(--background);
+  background-image: var(--mesh-gradient);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
 }
 
 body {
-  background: var(--background);
+  background: transparent;
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+}
+
+/* ------------------------------------------------------------------ */
+/* Micro-interactions & entrance animations.                           */
+/* ------------------------------------------------------------------ */
+
+/* Used on the main content wrapper — a gentle lift + fade on route   */
+/* entry. Also composes with per-item delays for staggered lists.     */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.anim-fade-up {
+  animation: fade-up 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Progress rings: draw the colored arc in from "empty" up to its     */
+/* React-computed strokeDashoffset. We only set the `from` keyframe — */
+/* the `to` is whatever stroke-dashoffset the inline style evaluates  */
+/* to. The start value comes from `--ring-circumference` which the    */
+/* component sets as an inline CSS var to its full 2πr length.         */
+@keyframes ring-draw {
+  from {
+    stroke-dashoffset: var(--ring-circumference);
+  }
+}
+
+.anim-ring-draw {
+  animation: ring-draw 1.1s cubic-bezier(0.22, 1, 0.36, 1) 0.05s both;
+}
+
+/* Trend chart line — draws left-to-right. The path's stroke-dasharray */
+/* is set big enough to exceed any path we'd realistically draw.       */
+@keyframes line-draw {
+  from {
+    stroke-dashoffset: 2400;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.anim-line-draw {
+  stroke-dasharray: 2400;
+  animation: line-draw 1.3s cubic-bezier(0.22, 1, 0.36, 1) 0.15s both;
+}
+
+/* Companion fade for the area fill beneath the line so it doesn't    */
+/* pop in before the line finishes drawing.                            */
+@keyframes area-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.anim-area-fade {
+  animation: area-fade 0.9s ease-out 0.7s both;
+}
+
+/* Little bubble/dot scale-in at the end of the line. */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.anim-pop-in {
+  animation: pop-in 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) 1.3s both;
+  transform-origin: center;
+  transform-box: fill-box;
+}
+
+/* ------------------------------------------------------------------ */
+/* Streak celebration — confetti burst + milestone toast.              */
+/* ------------------------------------------------------------------ */
+
+/* Each confetti piece gets its own --tx / --ty / --spin inline so the */
+/* same keyframes drive 44 unique trajectories. `both` pins them to    */
+/* their end state so they don't snap back while React is cleaning up. */
+@keyframes confetti-fly {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--tx, 0), var(--ty, 0), 0) rotate(var(--spin, 360deg));
+  }
+}
+
+.confetti-piece {
+  position: absolute;
+  border-radius: 2px;
+  will-change: transform, opacity;
+  animation-name: confetti-fly;
+  animation-timing-function: cubic-bezier(0.2, 0.7, 0.3, 1);
+  animation-fill-mode: both;
+}
+
+/* Toast slide-in from the right; paired with a gentle fade. The     */
+/* `both` fill-mode ensures the card stays put after the animation    */
+/* finishes rather than flickering back to its pre-animation state.   */
+@keyframes streak-toast-in {
+  from {
+    opacity: 0;
+    transform: translate3d(16px, 4px, 0) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+.streak-toast {
+  animation: streak-toast-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Honour the user's reduced-motion preference — all animations       */
+/* collapse to their end state with no movement.                       */
+@media (prefers-reduced-motion: reduce) {
+  .anim-fade-up,
+  .anim-ring-draw,
+  .anim-line-draw,
+  .anim-area-fade,
+  .anim-pop-in,
+  .confetti-piece,
+  .streak-toast {
+    animation: none !important;
+  }
+  .confetti-piece {
+    opacity: 0;
+  }
 }
