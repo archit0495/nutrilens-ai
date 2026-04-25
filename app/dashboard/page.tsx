@@ -4,6 +4,14 @@ import Link from 'next/link'
 import { ACTIVITY_LABELS, GOAL_LABELS, type ActivityLevel, type Goal } from '@/lib/nutrition/calculator'
 import MealRow from './meal-row'
 import CountUp from '@/app/components/count-up'
+import {
+  addDaysInTz,
+  formatLongDateInTz,
+  getUserTimezone,
+  parseDateKeyInTz,
+  startOfDayInTz,
+  toDateKeyInTz,
+} from '@/lib/timezone'
 
 type Meal = {
   id: string
@@ -20,8 +28,10 @@ type Meal = {
 /**
  * Dashboard — shows the selected day's meal log + targets.
  *
- * `?date=YYYY-MM-DD` lets the user scrub to past days (all windows are UTC so
- * the date key matches /history). No date param → today. Dates parse-fail or
+ * `?date=YYYY-MM-DD` lets the user scrub to past days. Date keys are computed
+ * in the user's local timezone (read from the `nl_tz` cookie set by
+ * `<TimezoneSync />`) so /dashboard, /history, and the streak badge all agree
+ * on what "today" is. No date param → today. Dates that fail to parse or sit
  * in the future → silently fall back to today so a bad link doesn't break the
  * app.
  */
@@ -46,27 +56,29 @@ export default async function DashboardPage(props: {
   }
 
   // ------------------------------------------------------------------
-  // Resolve "which day are we looking at?" — UTC throughout.
+  // Resolve "which day are we looking at?" — anchored to the user's local
+  // timezone (read from the `nl_tz` cookie). Falls back to UTC if the cookie
+  // hasn't been written yet.
   // ------------------------------------------------------------------
+  const tz = await getUserTimezone()
   const now = new Date()
-  const todayStart = utcStartOfDay(now)
+  const todayStart = startOfDayInTz(now, tz)
 
   const rawDateParam = (await props.searchParams).date ?? ''
-  const parsed = parseDateKey(rawDateParam)
+  const parsed = parseDateKeyInTz(rawDateParam, tz)
   // Clamp future dates back to today.
   const selectedStart =
     parsed && parsed.getTime() <= todayStart.getTime() ? parsed : todayStart
 
-  const selectedEnd = new Date(selectedStart)
-  selectedEnd.setUTCDate(selectedEnd.getUTCDate() + 1)
+  const selectedEnd = addDaysInTz(selectedStart, 1, tz)
 
   const isToday = selectedStart.getTime() === todayStart.getTime()
-  const selectedKey = toUtcDateKey(selectedStart)
-  const prevKey = toUtcDateKey(addUtcDays(selectedStart, -1))
-  const nextStart = addUtcDays(selectedStart, 1)
+  const selectedKey = toDateKeyInTz(selectedStart, tz)
+  const prevKey = toDateKeyInTz(addDaysInTz(selectedStart, -1, tz), tz)
+  const nextStart = addDaysInTz(selectedStart, 1, tz)
   // Guard: only enable "next" if it wouldn't take us past today.
   const nextKey =
-    nextStart.getTime() <= todayStart.getTime() ? toUtcDateKey(nextStart) : null
+    nextStart.getTime() <= todayStart.getTime() ? toDateKeyInTz(nextStart, tz) : null
 
   // ------------------------------------------------------------------
   // Fetch meals for the selected [start, end) window.
@@ -94,12 +106,7 @@ export default async function DashboardPage(props: {
     { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 }
   )
 
-  const longDate = selectedStart.toLocaleDateString(undefined, {
-    weekday: 'long',
-    month: 'long',
-    day: 'numeric',
-    timeZone: 'UTC',
-  })
+  const longDate = formatLongDateInTz(selectedStart, tz)
 
   return (
     <div className="min-h-screen">
@@ -225,51 +232,6 @@ export default async function DashboardPage(props: {
       </div>
     </div>
   )
-}
-
-// ---------------------------------------------------------------------------
-// UTC date helpers — dashboard, history, and calculator all share this basis.
-// ---------------------------------------------------------------------------
-
-function utcStartOfDay(d: Date): Date {
-  return new Date(
-    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
-  )
-}
-
-function addUtcDays(d: Date, days: number): Date {
-  const next = new Date(d)
-  next.setUTCDate(next.getUTCDate() + days)
-  return next
-}
-
-function toUtcDateKey(d: Date): string {
-  const yyyy = d.getUTCFullYear()
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0')
-  const dd = String(d.getUTCDate()).padStart(2, '0')
-  return `${yyyy}-${mm}-${dd}`
-}
-
-/**
- * Parse a YYYY-MM-DD string into a UTC-start-of-day Date. Returns null for
- * strings that don't match the format or decode to an invalid date.
- */
-function parseDateKey(s: string): Date | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
-  if (!match) return null
-  const y = Number(match[1])
-  const m = Number(match[2])
-  const d = Number(match[3])
-  if (m < 1 || m > 12 || d < 1 || d > 31) return null
-  const date = new Date(Date.UTC(y, m - 1, d))
-  if (
-    date.getUTCFullYear() !== y ||
-    date.getUTCMonth() !== m - 1 ||
-    date.getUTCDate() !== d
-  ) {
-    return null
-  }
-  return date
 }
 
 // ---------------------------------------------------------------------------

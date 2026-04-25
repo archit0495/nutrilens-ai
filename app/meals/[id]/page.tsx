@@ -3,6 +3,7 @@ import { redirect, notFound } from 'next/navigation'
 import Link from 'next/link'
 import MealDetailActions from './meal-detail-actions'
 import LoggedTime from './logged-time'
+import { getUserTimezone, toDateKeyInTz } from '@/lib/timezone'
 
 /**
  * Meal detail page — one-meal deep-dive.
@@ -52,15 +53,16 @@ export default async function MealDetailPage(props: {
 
   if (!meal) notFound()
 
+  const tz = await getUserTimezone()
   const logged = new Date(meal.logged_at)
   const longDate = logged.toLocaleDateString(undefined, {
     weekday: 'long',
     month: 'long',
     day: 'numeric',
     year: 'numeric',
-    timeZone: 'UTC',
+    timeZone: tz,
   })
-  const dateKey = toUtcDateKey(logged)
+  const dateKey = toDateKeyInTz(logged, tz)
   const backHref = `/dashboard?date=${dateKey}`
 
   const confidence = meal.ai_raw_response?.confidence ?? null
@@ -188,13 +190,6 @@ export default async function MealDetailPage(props: {
       </div>
     </div>
   )
-}
-
-function toUtcDateKey(d: Date): string {
-  const yyyy = d.getUTCFullYear()
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0')
-  const dd = String(d.getUTCDate()).padStart(2, '0')
-  return `${yyyy}-${mm}-${dd}`
 }
 
 // ---------------------------------------------------------------------------

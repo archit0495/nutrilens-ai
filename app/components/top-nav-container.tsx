@@ -1,5 +1,11 @@
 import { createClient } from '@/lib/supabase/server'
-import { computeStreak, toUtcDateKey, utcStartOfDay } from '@/lib/streak'
+import { computeStreak } from '@/lib/streak'
+import {
+  addDaysInTz,
+  getUserTimezone,
+  startOfDayInTz,
+  toDateKeyInTz,
+} from '@/lib/timezone'
 import TopNav from './top-nav'
 
 /**
@@ -14,8 +20,11 @@ import TopNav from './top-nav'
  * The streak computation is intentionally lightweight: we ask Supabase for
  * just the `logged_at` column over a 32-day window (the longest active
  * celebratable milestone needs 30, plus a day of headroom either side), bucket
- * by UTC date key, and run the shared `computeStreak` helper. That's ~1 query
- * per page load with a small payload.
+ * by the user's local-tz date key, and run the shared `computeStreak` helper.
+ * That's ~1 query per page load with a small payload.
+ *
+ * The user's tz comes from the `nl_tz` cookie set by `<TimezoneSync />` on
+ * first paint — defaults to 'UTC' if missing.
  */
 export default async function TopNavContainer() {
   const supabase = await createClient()
@@ -28,12 +37,12 @@ export default async function TopNavContainer() {
     return <TopNav streak={null} />
   }
 
+  const tz = await getUserTimezone()
   const now = new Date()
-  const todayStart = utcStartOfDay(now)
+  const todayStart = startOfDayInTz(now, tz)
   // 32 days gives us enough headroom for the 30-day milestone without bloating
   // every nav render into a big meals scan.
-  const windowStart = new Date(todayStart)
-  windowStart.setUTCDate(windowStart.getUTCDate() - 32)
+  const windowStart = addDaysInTz(todayStart, -32, tz)
 
   const { data } = await supabase
     .from('meals')
@@ -44,9 +53,9 @@ export default async function TopNavContainer() {
 
   const keys = new Set<string>()
   for (const row of data ?? []) {
-    keys.add(toUtcDateKey(new Date(row.logged_at)))
+    keys.add(toDateKeyInTz(new Date(row.logged_at), tz))
   }
-  const streak = computeStreak(keys, now)
+  const streak = computeStreak(keys, now, tz)
 
   return <TopNav streak={streak} />
 }

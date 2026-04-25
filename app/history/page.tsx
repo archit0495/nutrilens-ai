@@ -5,6 +5,16 @@ import { Suspense } from 'react'
 import CoachCard, { CoachCardSkeleton } from './coach-card'
 import type { Goal } from '@/lib/nutrition/calculator'
 import type { CoachDaySummary } from '@/lib/claude/coach'
+import { computeStreak as sharedComputeStreak } from '@/lib/streak'
+import {
+  addDaysInTz,
+  dayOfMonthInTz,
+  formatShortDateInTz,
+  formatShortWeekdayInTz,
+  getUserTimezone,
+  startOfDayInTz,
+  toDateKeyInTz,
+} from '@/lib/timezone'
 
 /**
  * History page.
@@ -15,7 +25,9 @@ import type { CoachDaySummary } from '@/lib/claude/coach'
  * (Task #11 wires up ?date handling on the dashboard itself — until then the
  * link still takes the user to the dashboard; they just see today's data.)
  *
- * Everything is in UTC so the "day" key matches the dashboard's today-window.
+ * Everything is bucketed in the user's local timezone (read from the `nl_tz`
+ * cookie set by `<TimezoneSync />`) so the "day" key matches the dashboard's
+ * today-window and the streak badge.
  */
 
 type MealRow = {
@@ -28,8 +40,8 @@ type MealRow = {
 }
 
 type DayTotals = {
-  dateKey: string // YYYY-MM-DD (UTC)
-  date: Date // start of that UTC day, as a Date
+  dateKey: string // YYYY-MM-DD in the user's local tz
+  date: Date // start of that local day, as a UTC Date instant
   calories: number
   protein_g: number
   carbs_g: number
@@ -56,14 +68,14 @@ export default async function HistoryPage() {
     .single()
   if (!profile || !profile.onboarded) redirect('/onboarding')
 
-  // Build a [start, end) UTC window that covers the last DAYS_TO_SHOW days, ending
-  // at the *end* of today (start of tomorrow). start is inclusive; end is exclusive.
+  // Build a [start, end) window covering the last DAYS_TO_SHOW *local* days,
+  // ending at the start of tomorrow-local. start inclusive, end exclusive —
+  // both are UTC instants of local-midnight boundaries.
+  const tz = await getUserTimezone()
   const now = new Date()
-  const endOfWindow = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)
-  )
-  const startOfWindow = new Date(endOfWindow)
-  startOfWindow.setUTCDate(startOfWindow.getUTCDate() - DAYS_TO_SHOW)
+  const todayStart = startOfDayInTz(now, tz)
+  const endOfWindow = addDaysInTz(todayStart, 1, tz)
+  const startOfWindow = addDaysInTz(endOfWindow, -DAYS_TO_SHOW, tz)
 
   const { data: meals } = await supabase
     .from('meals')
@@ -75,7 +87,7 @@ export default async function HistoryPage() {
     .returns<MealRow[]>()
 
   // Ascending (oldest → newest) for the chart, descending for the cards.
-  const daysAsc = buildDays(startOfWindow, DAYS_TO_SHOW, meals ?? [])
+  const daysAsc = buildDays(startOfWindow, DAYS_TO_SHOW, meals ?? [], tz)
   const daysDesc = [...daysAsc].reverse()
   const trendDays = daysAsc.slice(-TREND_DAYS)
 
@@ -92,14 +104,14 @@ export default async function HistoryPage() {
   // prompt ballooning.
   const coachDays: CoachDaySummary[] = daysAsc.map((d) => ({
     dateKey: d.dateKey,
-    weekday: shortWeekday(d.date),
+    weekday: formatShortWeekdayInTz(d.date, tz),
     calories: Math.round(d.calories),
     protein_g: Math.round(d.protein_g),
     carbs_g: Math.round(d.carbs_g),
     fat_g: Math.round(d.fat_g),
     mealCount: d.mealCount,
   }))
-  const coachStreak = computeStreak(daysAsc, now)
+  const coachStreak = computeStreak(daysAsc, now, tz)
   const recentMealNames = (meals ?? [])
     .filter((m) => (m.meal_name ?? '').trim().length > 0)
     .slice(0, 20)
@@ -134,7 +146,7 @@ export default async function HistoryPage() {
           />
         </div>
 
-        <TrendChart days={trendDays} target={targetCalories} />
+        <TrendChart days={trendDays} target={targetCalories} tz={tz} />
 
         {/* Claude's weekly coach — Suspense-streamed so the page paints first */}
         <div className="mt-5">
@@ -160,8 +172,9 @@ export default async function HistoryPage() {
               key={d.dateKey}
               day={d}
               target={targetCalories}
-              isToday={isSameUtcDay(d.date, now)}
+              isToday={d.dateKey === toDateKeyInTz(now, tz)}
               index={i}
+              tz={tz}
             />
           ))}
         </div>
@@ -174,51 +187,37 @@ export default async function HistoryPage() {
 // Data helpers
 // ---------------------------------------------------------------------------
 
-function isSameUtcDay(a: Date, b: Date): boolean {
-  return (
-    a.getUTCFullYear() === b.getUTCFullYear() &&
-    a.getUTCMonth() === b.getUTCMonth() &&
-    a.getUTCDate() === b.getUTCDate()
-  )
-}
-
-function toUtcDateKey(d: Date): string {
-  const yyyy = d.getUTCFullYear()
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0')
-  const dd = String(d.getUTCDate()).padStart(2, '0')
-  return `${yyyy}-${mm}-${dd}`
-}
-
 /**
  * Create one DayTotals entry per day in the window, then bucket each meal
- * into its matching UTC day. Returns days in ascending (oldest-first) order,
- * so slicing the tail gives us "the last N days".
+ * into its matching local-tz day. Returns days in ascending (oldest-first)
+ * order, so slicing the tail gives us "the last N days".
  */
 function buildDays(
   windowStart: Date,
   count: number,
-  meals: MealRow[]
+  meals: MealRow[],
+  tz: string
 ): DayTotals[] {
   const map = new Map<string, DayTotals>()
 
+  let cursor = windowStart
   for (let i = 0; i < count; i++) {
-    const d = new Date(windowStart)
-    d.setUTCDate(d.getUTCDate() + i)
-    const key = toUtcDateKey(d)
+    const key = toDateKeyInTz(cursor, tz)
     map.set(key, {
       dateKey: key,
-      date: d,
+      date: cursor,
       calories: 0,
       protein_g: 0,
       carbs_g: 0,
       fat_g: 0,
       mealCount: 0,
     })
+    cursor = addDaysInTz(cursor, 1, tz)
   }
 
   for (const m of meals) {
     const d = new Date(m.logged_at)
-    const key = toUtcDateKey(d)
+    const key = toDateKeyInTz(d, tz)
     const entry = map.get(key)
     if (!entry) continue
     entry.calories += m.calories ?? 0
@@ -265,7 +264,15 @@ function SummaryStat({
 // Trend chart — pure SVG line chart of the last N days' daily calorie totals
 // ---------------------------------------------------------------------------
 
-function TrendChart({ days, target }: { days: DayTotals[]; target: number }) {
+function TrendChart({
+  days,
+  target,
+  tz,
+}: {
+  days: DayTotals[]
+  target: number
+  tz: string
+}) {
   const W = 700
   const H = 220
   const padX = 28
@@ -381,7 +388,7 @@ function TrendChart({ days, target }: { days: DayTotals[]; target: number }) {
                 fontSize="10"
                 fill="#6b7280"
               >
-                {shortWeekday(p.day.date)}
+                {formatShortWeekdayInTz(p.day.date, tz)}
               </text>
               <text
                 x={p.x}
@@ -390,7 +397,7 @@ function TrendChart({ days, target }: { days: DayTotals[]; target: number }) {
                 fontSize="9"
                 fill="#9ca3af"
               >
-                {p.day.date.getUTCDate()}
+                {dayOfMonthInTz(p.day.date, tz)}
               </text>
               {isLast && latest && latest.calories > 0 && (
                 <text
@@ -436,43 +443,20 @@ function smoothLine(pts: { x: number; y: number }[]): string {
   return d
 }
 
-function shortWeekday(d: Date): string {
-  // 3-letter weekday in the user's locale, computed in UTC to match our day key.
-  return d.toLocaleDateString(undefined, { weekday: 'short', timeZone: 'UTC' })
-}
-
 /**
  * Consecutive-day logging streak ending today (or yesterday if today's empty
  * and we want to show the "on-fire" streak they still have momentum on).
  *
- * We walk BACK from today; if today has no meal yet we still count an existing
- * yesterday-streak so the coach can say "4-day streak — today's fresh!" rather
- * than resetting to 0 before the user has even had breakfast.
+ * Wraps the shared `computeStreak` helper (lib/streak.ts) — we just have to
+ * project the day-bucket array down to the set of "had at least one meal"
+ * keys it expects.
  */
-function computeStreak(daysAsc: DayTotals[], now: Date): number {
-  if (daysAsc.length === 0) return 0
-  const byKey = new Map(daysAsc.map((d) => [d.dateKey, d]))
-  const todayKey = toUtcDateKey(
-    new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
-  )
-  const todayEntry = byKey.get(todayKey)
-  // Start from yesterday if today is empty — that preserves the streak momentum.
-  const cursor = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
-  )
-  if (!todayEntry || todayEntry.mealCount === 0) {
-    cursor.setUTCDate(cursor.getUTCDate() - 1)
+function computeStreak(daysAsc: DayTotals[], now: Date, tz: string): number {
+  const keys = new Set<string>()
+  for (const d of daysAsc) {
+    if (d.mealCount > 0) keys.add(d.dateKey)
   }
-  let streak = todayEntry && todayEntry.mealCount > 0 ? 1 : 0
-  while (true) {
-    const key = toUtcDateKey(cursor)
-    const entry = byKey.get(key)
-    if (!entry || entry.mealCount === 0) break
-    // Already counted today (if present); only add prior days here.
-    if (key !== todayKey) streak += 1
-    cursor.setUTCDate(cursor.getUTCDate() - 1)
-  }
-  return streak
+  return sharedComputeStreak(keys, now, tz)
 }
 
 // ---------------------------------------------------------------------------
@@ -484,18 +468,15 @@ function DayCard({
   target,
   isToday,
   index = 0,
+  tz,
 }: {
   day: DayTotals
   target: number
   isToday: boolean
   index?: number
+  tz: string
 }) {
-  const label = day.date.toLocaleDateString(undefined, {
-    weekday: 'long',
-    month: 'short',
-    day: 'numeric',
-    timeZone: 'UTC',
-  })
+  const label = formatShortDateInTz(day.date, tz)
   const isEmpty = day.mealCount === 0
   const cal = Math.round(day.calories)
   const calPct = target > 0 ? (cal / target) * 100 : 0

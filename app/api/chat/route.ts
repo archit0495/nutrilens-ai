@@ -5,6 +5,14 @@ import {
   type UserChatContext,
 } from '@/lib/claude/chat'
 import type { ActivityLevel, Goal } from '@/lib/nutrition/calculator'
+import {
+  addDaysInTz,
+  formatHourMinuteInTz,
+  formatShortWeekdayInTz,
+  getUserTimezone,
+  startOfDayInTz,
+  toDateKeyInTz,
+} from '@/lib/timezone'
 
 /**
  * POST /api/chat
@@ -56,10 +64,11 @@ export async function POST(req: Request) {
     return new Response('Finish onboarding first', { status: 403 })
   }
 
+  const tz = await getUserTimezone()
   const now = new Date()
-  const todayStart = utcStartOfDay(now)
-  const todayEnd = addUtcDays(todayStart, 1)
-  const weekStart = addUtcDays(todayStart, -7)
+  const todayStart = startOfDayInTz(now, tz)
+  const todayEnd = addDaysInTz(todayStart, 1, tz)
+  const weekStart = addDaysInTz(todayStart, -7, tz)
 
   // Single query spanning last 7 days + today, bucketed client-side.
   const { data: recent } = await supabase
@@ -74,7 +83,7 @@ export async function POST(req: Request) {
     .returns<MealRow[]>()
 
   const meals = recent ?? []
-  const context = buildContext(profile, meals, todayStart)
+  const context = buildContext(profile, meals, todayStart, tz)
 
   // ------------------------------------------------------------------
   // Stream the response.
@@ -119,38 +128,16 @@ function parseMessages(raw: unknown): ChatMessage[] | null {
   return out.slice(-12)
 }
 
-function utcStartOfDay(d: Date): Date {
-  return new Date(
-    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
-  )
-}
-
-function addUtcDays(d: Date, days: number): Date {
-  const next = new Date(d)
-  next.setUTCDate(next.getUTCDate() + days)
-  return next
-}
-
-function toUtcDateKey(d: Date): string {
-  const yyyy = d.getUTCFullYear()
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0')
-  const dd = String(d.getUTCDate()).padStart(2, '0')
-  return `${yyyy}-${mm}-${dd}`
-}
-
-function shortWeekday(d: Date): string {
-  return d.toLocaleDateString(undefined, { weekday: 'short', timeZone: 'UTC' })
-}
-
 function buildContext(
   // Supabase row shape — using `any` here is OK because we immediately narrow
   // to the fields we care about via the UserChatContext construction below.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   profile: any,
   meals: MealRow[],
-  todayStart: Date
+  todayStart: Date,
+  tz: string
 ): UserChatContext {
-  const todayKey = toUtcDateKey(todayStart)
+  const todayKey = toDateKeyInTz(todayStart, tz)
 
   // Group all meals by UTC date key.
   const dayBuckets = new Map<
@@ -168,7 +155,7 @@ function buildContext(
 
   for (const m of meals) {
     const logged = new Date(m.logged_at)
-    const key = toUtcDateKey(logged)
+    const key = toDateKeyInTz(logged, tz)
     const bucket = dayBuckets.get(key) ?? {
       calories: 0,
       protein_g: 0,
@@ -188,7 +175,7 @@ function buildContext(
         name: m.meal_name || 'Unnamed meal',
         calories: Number(m.calories ?? 0),
         protein_g: Number(m.protein_g ?? 0),
-        loggedAt: logged.toISOString().slice(11, 16) + ' UTC',
+        loggedAt: `${formatHourMinuteInTz(logged, tz)} ${tz}`,
       })
     }
   }
@@ -196,12 +183,12 @@ function buildContext(
   // Build last 7 days (oldest first), including "no log" days.
   const lastSevenDays: UserChatContext['lastSevenDays'] = []
   for (let i = 7; i >= 1; i--) {
-    const d = addUtcDays(todayStart, -i)
-    const key = toUtcDateKey(d)
+    const d = addDaysInTz(todayStart, -i, tz)
+    const key = toDateKeyInTz(d, tz)
     const bucket = dayBuckets.get(key)
     lastSevenDays.push({
       dateKey: key,
-      weekday: shortWeekday(d),
+      weekday: formatShortWeekdayInTz(d, tz),
       calories: bucket?.calories ?? 0,
       protein_g: bucket?.protein_g ?? 0,
       mealCount: bucket?.mealCount ?? 0,
@@ -213,18 +200,13 @@ function buildContext(
   let streak = 0
   const todayBucket = dayBuckets.get(todayKey)
   if (todayBucket && todayBucket.mealCount > 0) streak = 1
-  const cursor = new Date(todayStart)
-  if (!todayBucket || todayBucket.mealCount === 0) {
-    cursor.setUTCDate(cursor.getUTCDate() - 1)
-  } else {
-    cursor.setUTCDate(cursor.getUTCDate() - 1)
-  }
+  let cursor = addDaysInTz(todayStart, -1, tz)
   while (true) {
-    const key = toUtcDateKey(cursor)
+    const key = toDateKeyInTz(cursor, tz)
     const bucket = dayBuckets.get(key)
     if (!bucket || bucket.mealCount === 0) break
     streak += 1
-    cursor.setUTCDate(cursor.getUTCDate() - 1)
+    cursor = addDaysInTz(cursor, -1, tz)
   }
 
   const todayBucketFinal = todayBucket ?? {

@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import TopNavContainer from "./components/top-nav-container";
 import ChatWidget from "./components/chat-widget";
+import TimezoneSync from "./components/timezone-sync";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -45,6 +46,7 @@ export default function RootLayout({
             backgroundSize: "160px 160px",
           }}
         />
+        <TimezoneSync />
         <TopNavContainer />
         {children}
         <ChatWidget />

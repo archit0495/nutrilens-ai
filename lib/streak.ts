@@ -6,50 +6,39 @@
  * and they must agree or the UX starts lying to itself.
  *
  * Rules (by intent):
- *   - Walk back day-by-day from today, counting any UTC day with at least one
- *     logged meal.
+ *   - Walk back day-by-day from today (in the user's *local* timezone),
+ *     counting any local day with at least one logged meal.
  *   - If today is empty, don't penalize the user before breakfast — keep
  *     yesterday's streak alive until they've had a full blank day.
- *   - Streak ends the first time we hit a UTC day with zero meals (that
+ *   - Streak ends the first time we hit a local day with zero meals (that
  *     isn't the still-open today).
  *
- * The function takes only what it needs — a set of UTC date keys that had at
- * least one meal — so callers can fetch meals however makes sense for their
- * page.
+ * The function takes only what it needs — a set of local-tz date keys that
+ * had at least one meal — so callers can fetch meals however makes sense for
+ * their page. Date keys MUST be produced via `toDateKeyInTz(..., tz)` from
+ * lib/timezone.ts using the same tz string passed here.
  */
+import { addDaysInTz, startOfDayInTz, toDateKeyInTz } from './timezone'
 
-export function utcStartOfDay(d: Date): Date {
-  return new Date(
-    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
-  )
-}
-
-export function toUtcDateKey(d: Date): string {
-  const yyyy = d.getUTCFullYear()
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0')
-  const dd = String(d.getUTCDate()).padStart(2, '0')
-  return `${yyyy}-${mm}-${dd}`
-}
-
-export function computeStreak(loggedDayKeys: Set<string>, now: Date): number {
-  const todayStart = utcStartOfDay(now)
-  const todayKey = toUtcDateKey(todayStart)
+export function computeStreak(
+  loggedDayKeys: Set<string>,
+  now: Date,
+  tz: string
+): number {
+  const todayStart = startOfDayInTz(now, tz)
+  const todayKey = toDateKeyInTz(todayStart, tz)
   const todayHasLog = loggedDayKeys.has(todayKey)
 
   // If today is still open (no meals yet), start counting from yesterday —
   // the streak shouldn't reset before the user's first meal of the day.
-  const cursor = new Date(todayStart)
-  let streak = 0
-  if (todayHasLog) {
-    streak = 1
-  }
-  cursor.setUTCDate(cursor.getUTCDate() - 1)
+  let streak = todayHasLog ? 1 : 0
+  let cursor = addDaysInTz(todayStart, -1, tz)
 
   while (true) {
-    const key = toUtcDateKey(cursor)
+    const key = toDateKeyInTz(cursor, tz)
     if (!loggedDayKeys.has(key)) break
     streak += 1
-    cursor.setUTCDate(cursor.getUTCDate() - 1)
+    cursor = addDaysInTz(cursor, -1, tz)
   }
 
   return streak
