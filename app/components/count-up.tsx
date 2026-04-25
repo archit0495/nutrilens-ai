@@ -39,8 +39,12 @@ export default function CountUp({
       typeof window !== 'undefined' &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches
     if (prefersReduced || duration <= 0) {
-      setDisplay(value)
-      return
+      // Defer past the effect body so we're not running a synchronous
+      // setState during the effect (lint rule react-hooks/set-state-in-effect).
+      rafRef.current = requestAnimationFrame(() => setDisplay(value))
+      return () => {
+        if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+      }
     }
 
     const start = performance.now()

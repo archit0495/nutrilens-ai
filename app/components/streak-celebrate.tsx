@@ -169,50 +169,67 @@ export default function StreakCelebrate({ streak }: { streak: number }) {
 const CONFETTI_COUNT = 44
 const CONFETTI_MS = 1200
 
+type ConfettiPiece = {
+  size: number
+  duration: number
+  delay: number
+  hue: string
+  tx: number
+  ty: number
+  spin: number
+}
+
+// Pre-compute each piece's trajectory once at mount via the `useState`
+// initializer so the impure RNG calls happen during state init, never during
+// render (lint rule react-hooks/purity).
+function buildPieces(): ConfettiPiece[] {
+  return Array.from({ length: CONFETTI_COUNT }, (_, i) => {
+    const angle = (i / CONFETTI_COUNT) * 360 + rand(-8, 8)
+    const distance = 140 + rand(-40, 80)
+    const drift = rand(-30, 30)
+    const spin = rand(180, 720) * (Math.random() < 0.5 ? -1 : 1)
+    const duration = CONFETTI_MS + rand(-150, 150)
+    const delay = rand(0, 80)
+    const size = rand(6, 10)
+    const hue = CONFETTI_HUES[i % CONFETTI_HUES.length]
+    const tx = Math.cos((angle * Math.PI) / 180) * distance + drift
+    const ty = Math.sin((angle * Math.PI) / 180) * distance + 180 // + gravity
+    return { size, duration, delay, hue, tx, ty, spin }
+  })
+}
+
 // Tailwind/CSS won't let us fluidly compose 40 unique random angles, so we
 // generate them inline and let each piece inherit its own trajectory via
 // custom properties.
 function ConfettiBurst() {
-  const pieces = Array.from({ length: CONFETTI_COUNT }, (_, i) => i)
+  const [pieces] = useState<ConfettiPiece[]>(buildPieces)
 
   return (
     <div
       aria-hidden
       className="fixed inset-0 pointer-events-none z-[60] overflow-hidden"
     >
-      {pieces.map((i) => {
-        const angle = (i / CONFETTI_COUNT) * 360 + rand(-8, 8)
-        const distance = 140 + rand(-40, 80)
-        const drift = rand(-30, 30)
-        const spin = rand(180, 720) * (Math.random() < 0.5 ? -1 : 1)
-        const duration = CONFETTI_MS + rand(-150, 150)
-        const delay = rand(0, 80)
-        const size = rand(6, 10)
-        const hue = CONFETTI_HUES[i % CONFETTI_HUES.length]
-        const tx = Math.cos((angle * Math.PI) / 180) * distance
-        const ty = Math.sin((angle * Math.PI) / 180) * distance
-        return (
-          <span
-            key={i}
-            className="confetti-piece"
-            style={{
-              // Launch from the top-right corner so the confetti visually
-              // "comes from" the streak chip. 78% right / 10% from top maps
-              // roughly to where the chip sits across viewport widths.
-              left: '78%',
-              top: '10%',
-              width: `${size}px`,
-              height: `${size * 0.55}px`,
-              background: hue,
-              animationDuration: `${duration}ms`,
-              animationDelay: `${delay}ms`,
-              ['--tx' as string]: `${tx + drift}px`,
-              ['--ty' as string]: `${ty + 180}px`, // + gravity
-              ['--spin' as string]: `${spin}deg`,
-            } as React.CSSProperties}
-          />
-        )
-      })}
+      {pieces.map((p, i) => (
+        <span
+          key={i}
+          className="confetti-piece"
+          style={{
+            // Launch from the top-right corner so the confetti visually
+            // "comes from" the streak chip. 78% right / 10% from top maps
+            // roughly to where the chip sits across viewport widths.
+            left: '78%',
+            top: '10%',
+            width: `${p.size}px`,
+            height: `${p.size * 0.55}px`,
+            background: p.hue,
+            animationDuration: `${p.duration}ms`,
+            animationDelay: `${p.delay}ms`,
+            ['--tx' as string]: `${p.tx}px`,
+            ['--ty' as string]: `${p.ty}px`,
+            ['--spin' as string]: `${p.spin}deg`,
+          } as React.CSSProperties}
+        />
+      ))}
     </div>
   )
 }

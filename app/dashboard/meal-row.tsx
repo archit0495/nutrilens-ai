@@ -1,9 +1,14 @@
 'use client'
 
-import { useEffect, useState, useTransition } from 'react'
+import { useState, useSyncExternalStore, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { updateMeal, deleteMeal } from './actions'
+
+// useSyncExternalStore wants a stable subscribe function. We never need to
+// notify React of changes — the time string only depends on `iso` — so a
+// no-op unsubscribe is fine.
+const subscribeToNothing = () => () => {}
 
 type Meal = {
   id: string
@@ -21,22 +26,25 @@ export default function MealRow({ meal, index = 0 }: { meal: Meal; index?: numbe
   const router = useRouter()
   const [editing, setEditing] = useState(false)
 
-  // The server has no idea what timezone the user is in, so we seed with a
-  // deterministic UTC-based string (same on server + client first render to
-  // avoid hydration mismatch) and then upgrade to the browser's locale +
-  // timezone in a post-mount effect.
-  const [timeStr, setTimeStr] = useState(() => {
-    const d = new Date(meal.logged_at)
-    const hh = String(d.getUTCHours()).padStart(2, '0')
-    const mm = String(d.getUTCMinutes()).padStart(2, '0')
-    return `${hh}:${mm}`
-  })
-  useEffect(() => {
-    const d = new Date(meal.logged_at)
-    setTimeStr(
-      d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    )
-  }, [meal.logged_at])
+  // The server has no idea what timezone the user is in, so we feed
+  // useSyncExternalStore a deterministic UTC `HH:MM` server snapshot and a
+  // locale-formatted client snapshot. React swaps from server → client
+  // automatically on mount — no setState-in-effect (lint rule
+  // react-hooks/set-state-in-effect).
+  const timeStr = useSyncExternalStore(
+    subscribeToNothing,
+    () =>
+      new Date(meal.logged_at).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    () => {
+      const d = new Date(meal.logged_at)
+      const hh = String(d.getUTCHours()).padStart(2, '0')
+      const mm = String(d.getUTCMinutes()).padStart(2, '0')
+      return `${hh}:${mm}`
+    }
+  )
 
   const detailHref = `/meals/${meal.id}`
 

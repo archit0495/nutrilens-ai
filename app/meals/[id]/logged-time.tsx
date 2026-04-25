@@ -1,29 +1,32 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useSyncExternalStore } from 'react'
 
 /**
  * Render a meal's logged-at time.
  *
- * The server has no idea what timezone the user is in, so we seed the initial
- * render with a deterministic UTC `HH:MM` string (identical server + client
- * first render → no hydration mismatch) and then upgrade to the browser's
- * locale + timezone after mount.
+ * The server has no idea what timezone the user is in, so we feed
+ * `useSyncExternalStore` a deterministic UTC `HH:MM` server snapshot and a
+ * locale-formatted client snapshot. React swaps from server → client snapshot
+ * automatically on mount, with no setState-in-effect (which the new
+ * react-hooks lint rules flag).
  */
+const subscribe = () => () => {}
+
 export default function LoggedTime({ iso }: { iso: string }) {
-  const [time, setTime] = useState(() => {
-    const d = new Date(iso)
-    const hh = String(d.getUTCHours()).padStart(2, '0')
-    const mm = String(d.getUTCMinutes()).padStart(2, '0')
-    return `${hh}:${mm}`
-  })
-  useEffect(() => {
-    setTime(
+  const time = useSyncExternalStore(
+    subscribe,
+    () =>
       new Date(iso).toLocaleTimeString([], {
         hour: '2-digit',
         minute: '2-digit',
-      })
-    )
-  }, [iso])
+      }),
+    () => {
+      const d = new Date(iso)
+      const hh = String(d.getUTCHours()).padStart(2, '0')
+      const mm = String(d.getUTCMinutes()).padStart(2, '0')
+      return `${hh}:${mm}`
+    }
+  )
   return <span>{time}</span>
 }
